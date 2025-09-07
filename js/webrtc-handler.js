@@ -8,6 +8,8 @@ class WebRTCHandler {
         this.pendingCandidates = new Map(); // Map of peerId -> ICE candidates queue
         this.initiatorMap = new Map(); // Map of peerId -> boolean (true if we initiated)
         this.connectedPeers = new Set(); // Track peers we've already shown connection message for
+        this.disconnectTimeouts = new Map(); // Map of peerId -> timeout ID
+        this.fileSelectionActive = false; // Track if file selection is active
         this.onMessageCallback = null;
         this.onPeerConnectedCallback = null;
         this.onPeerDisconnectedCallback = null;
@@ -15,12 +17,14 @@ class WebRTCHandler {
 
     // Initialize WebRTC for a new peer
     async createPeerConnection(peerId, isInitiator) {
-        console.log(`Creating peer connection with ${peerId}, initiator: ${isInitiator}`);
+        console.log(`[WebRTC] Creating connection with ${peerId}, initiator: ${isInitiator}`);
+        console.log(`[WebRTC] Current peers: ${Array.from(this.peers.keys()).join(', ')}`);
+        console.log(`[WebRTC] Current data channels: ${Array.from(this.dataChannels.keys()).join(', ')}`);
         
         // Clean up any existing connection first
         if (this.peers.has(peerId)) {
-            console.log(`Cleaning up existing connection for ${peerId}`);
-            this.handlePeerDisconnected(peerId);
+            console.log(`[WebRTC] Cleaning up existing connection for ${peerId}`);
+            this.cleanupPeer(peerId);
         }
         
         // Track who initiated the connection
@@ -44,21 +48,70 @@ class WebRTCHandler {
 
         // Handle connection state changes
         pc.onconnectionstatechange = () => {
+            console.log(`[WebRTC] Connection state with ${peerId}: ${pc.connectionState}`);
             if (pc.connectionState === 'connected') {
                 console.log(`✅ Connected to ${peerId}`);
             } else if (pc.connectionState === 'failed') {
                 console.error(`❌ Connection failed with ${peerId}`);
                 this.handlePeerDisconnected(peerId);
             } else if (pc.connectionState === 'disconnected') {
+                console.log(`[WebRTC] Disconnected from ${peerId}`);
                 this.handlePeerDisconnected(peerId);
             }
         };
 
         // Add ICE connection state monitoring
         pc.oniceconnectionstatechange = () => {
+            console.log(`[WebRTC] ICE state with ${peerId}: ${pc.iceConnectionState}`);
             if (pc.iceConnectionState === 'failed') {
-                console.error('❌ ICE connection failed');
+                console.error(`❌ ICE connection failed with ${peerId}`);
                 this.handlePeerDisconnected(peerId);
+            } else if (pc.iceConnectionState === 'disconnected') {
+                console.log(`[WebRTC] ICE disconnected from ${peerId}`);
+                // Clear any existing timeout for this peer
+                if (this.disconnectTimeouts && this.disconnectTimeouts.has(peerId)) {
+                    clearTimeout(this.disconnectTimeouts.get(peerId));
+                }
+                
+                // Don't immediately disconnect, give it time to reconnect
+                // Use longer timeout (30s default, extended if file selection active)
+                const timeoutDuration = this.fileSelectionActive ? 60000 : 30000; // 60s if selecting file, 30s otherwise
+                console.log(`[WebRTC] Setting disconnect timeout for ${peerId}: ${timeoutDuration/1000}s`);
+                
+                const timeout = setTimeout(() => {
+                    const currentPc = this.peers.get(peerId);
+                    if (currentPc && currentPc.iceConnectionState === 'disconnected') {
+                        // Check again if file selection is still active
+                        if (this.fileSelectionActive) {
+                            console.log(`[WebRTC] File selection active, extending timeout for ${peerId}`);
+                            // Reschedule for another 30 seconds
+                            const extendedTimeout = setTimeout(() => {
+                                const pc = this.peers.get(peerId);
+                                if (pc && pc.iceConnectionState === 'disconnected') {
+                                    console.log(`[WebRTC] Disconnecting ${peerId} after extended timeout`);
+                                    this.handlePeerDisconnected(peerId);
+                                }
+                            }, 30000);
+                            this.disconnectTimeouts.set(peerId, extendedTimeout);
+                        } else {
+                            console.log(`[WebRTC] Disconnecting ${peerId} after timeout`);
+                            this.handlePeerDisconnected(peerId);
+                        }
+                    }
+                }, timeoutDuration);
+                
+                // Store timeout reference
+                if (!this.disconnectTimeouts) {
+                    this.disconnectTimeouts = new Map();
+                }
+                this.disconnectTimeouts.set(peerId, timeout);
+            } else if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+                // Clear disconnect timeout if connection is restored
+                if (this.disconnectTimeouts && this.disconnectTimeouts.has(peerId)) {
+                    console.log(`[WebRTC] Connection restored with ${peerId}, clearing timeout`);
+                    clearTimeout(this.disconnectTimeouts.get(peerId));
+                    this.disconnectTimeouts.delete(peerId);
+                }
             }
         };
 
@@ -310,20 +363,43 @@ class WebRTCHandler {
         }
     }
 
-    // Handle peer disconnected
-    handlePeerDisconnected(peerId) {
-        console.log(`Peer disconnected: ${peerId}`);
+    // Clean up peer resources without triggering callbacks
+    cleanupPeer(peerId) {
+        console.log(`[WebRTC] Cleaning up peer: ${peerId}`);
         
-        // Clean up peer connection
+        // Clear any disconnect timeout
+        if (this.disconnectTimeouts && this.disconnectTimeouts.has(peerId)) {
+            clearTimeout(this.disconnectTimeouts.get(peerId));
+            this.disconnectTimeouts.delete(peerId);
+        }
+        
+        // Close data channel
+        const channel = this.dataChannels.get(peerId);
+        if (channel) {
+            channel.close();
+            this.dataChannels.delete(peerId);
+        }
+        
+        // Close peer connection
         const pc = this.peers.get(peerId);
         if (pc) {
             pc.close();
             this.peers.delete(peerId);
         }
         
-        // Clean up data channel and initiator map
-        this.dataChannels.delete(peerId);
+        // Clean up tracking maps
         this.initiatorMap.delete(peerId);
+        this.pendingCandidates.delete(peerId);
+    }
+
+    // Handle peer disconnected
+    handlePeerDisconnected(peerId) {
+        console.log(`[WebRTC] Peer disconnected: ${peerId}`);
+        
+        // Clean up peer resources
+        this.cleanupPeer(peerId);
+        
+        // Remove from connected peers
         this.connectedPeers.delete(peerId);
         
         if (this.onPeerDisconnectedCallback) {
@@ -334,12 +410,24 @@ class WebRTCHandler {
     // Get connected peers count
     getConnectedPeersCount() {
         let count = 0;
-        this.dataChannels.forEach((channel) => {
+        this.dataChannels.forEach((channel, peerId) => {
             if (channel.readyState === 'open') {
                 count++;
             }
         });
+        console.log(`[WebRTC] Connected peers count: ${count}`);
         return count;
+    }
+
+    // Get all connected peer IDs
+    getConnectedPeerIds() {
+        const connectedIds = [];
+        this.dataChannels.forEach((channel, peerId) => {
+            if (channel.readyState === 'open') {
+                connectedIds.push(peerId);
+            }
+        });
+        return connectedIds;
     }
 
     // Check if WebRTC is connected to any peer
@@ -349,11 +437,45 @@ class WebRTCHandler {
 
     // Clean up all connections
     disconnect() {
+        // Clear all disconnect timeouts
+        if (this.disconnectTimeouts) {
+            this.disconnectTimeouts.forEach((timeout) => clearTimeout(timeout));
+            this.disconnectTimeouts.clear();
+        }
+        
         this.peers.forEach((pc, peerId) => {
             pc.close();
         });
         this.peers.clear();
         this.dataChannels.clear();
+    }
+
+    // Set file selection state
+    setFileSelectionActive(active) {
+        this.fileSelectionActive = active;
+        console.log(`[WebRTC] File selection active: ${active}`);
+        
+        // If file selection ended and we have disconnected peers, check them now
+        if (!active) {
+            this.peers.forEach((pc, peerId) => {
+                if (pc.iceConnectionState === 'disconnected') {
+                    console.log(`[WebRTC] Checking disconnected peer ${peerId} after file selection`);
+                    // Connection might have been waiting for file selection to end
+                    // Give it a short grace period to reconnect
+                    if (this.disconnectTimeouts.has(peerId)) {
+                        clearTimeout(this.disconnectTimeouts.get(peerId));
+                        const timeout = setTimeout(() => {
+                            const currentPc = this.peers.get(peerId);
+                            if (currentPc && currentPc.iceConnectionState === 'disconnected') {
+                                console.log(`[WebRTC] Disconnecting ${peerId} after file selection ended`);
+                                this.handlePeerDisconnected(peerId);
+                            }
+                        }, 5000); // 5 seconds grace period after file selection
+                        this.disconnectTimeouts.set(peerId, timeout);
+                    }
+                }
+            });
+        }
     }
 
     // Set callbacks

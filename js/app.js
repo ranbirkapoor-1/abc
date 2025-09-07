@@ -12,6 +12,8 @@ class P2PChatApp {
         this.peers = new Set();
         this.peerNicknames = new Map(); // Map of peerId -> nickname
         this.connectionState = CONFIG.CONNECTION_STATE.DISCONNECTED;
+        this.savedRoomId = null; // Store for reconnection
+        this.savedNickname = null; // Store for reconnection
         
         this.init();
     }
@@ -81,14 +83,51 @@ class P2PChatApp {
         const fileInput = document.getElementById('fileInput');
         
         fileButton.addEventListener('click', () => {
+            // Notify WebRTC handler that file selection is starting
+            if (this.webrtcHandler) {
+                this.webrtcHandler.setFileSelectionActive(true);
+                console.log('[App] File selection started, extended disconnect timeout active');
+            }
             fileInput.click();
         });
         
         fileInput.addEventListener('change', (e) => {
+            // File selection completed
+            if (this.webrtcHandler) {
+                this.webrtcHandler.setFileSelectionActive(false);
+                console.log('[App] File selection completed');
+            }
             this.handleFileSelect(e.target.files);
             fileInput.value = ''; // Reset input
         });
+        
+        // Also handle if user cancels file selection
+        fileInput.addEventListener('cancel', () => {
+            if (this.webrtcHandler) {
+                this.webrtcHandler.setFileSelectionActive(false);
+                console.log('[App] File selection cancelled');
+            }
+        });
+        
+        // Handle focus events to detect when file dialog is closed
+        window.addEventListener('focus', () => {
+            // Small delay to ensure file input change event fires first if a file was selected
+            setTimeout(() => {
+                if (this.webrtcHandler && this.webrtcHandler.fileSelectionActive) {
+                    this.webrtcHandler.setFileSelectionActive(false);
+                    console.log('[App] File dialog closed (window refocused)');
+                }
+            }, 100);
+        });
 
+        // Reconnect button
+        const reconnectBtn = document.getElementById('reconnectBtn');
+        if (reconnectBtn) {
+            reconnectBtn.addEventListener('click', () => {
+                this.reconnect();
+            });
+        }
+        
         // Typing indicator
         let typingTimer;
         messageInput.addEventListener('input', () => {
@@ -150,6 +189,10 @@ class P2PChatApp {
 
         this.roomId = roomId;
         this.nickname = nickname;
+        
+        // Save for potential reconnection
+        this.savedRoomId = roomId;
+        this.savedNickname = nickname;
         
         // Save nickname to localStorage
         localStorage.setItem('chatNickname', nickname);
@@ -259,11 +302,13 @@ class P2PChatApp {
 
         // Handle peer joined
         this.firebaseHandler.onPeerJoined(async (peerId, nickname, isExistingUser = false) => {
+            console.log(`[App] Peer joined: ${peerId} (${nickname}), existing: ${isExistingUser}`);
             // Check if peer already exists to avoid duplicates
             const isNewPeer = !this.peers.has(peerId);
             
             // If peer exists but reconnecting, clean up old connection first
             if (!isNewPeer && this.webrtcHandler) {
+                console.log(`[App] Cleaning up old connection for ${peerId}`);
                 // Clean up any existing connection
                 this.webrtcHandler.handlePeerDisconnected(peerId);
             }
@@ -283,20 +328,23 @@ class P2PChatApp {
             
             // Check if we should initiate WebRTC connection
             const users = await this.firebaseHandler.getRoomUsers();
+            console.log(`[App] Room has ${users.length} users`);
+            
             if (users.length <= CONFIG.MAX_PEERS) {
                 // Important: Only ONE peer should initiate to avoid duplicate connections
                 // Use consistent rule: peer with lexicographically SMALLER ID initiates
                 const shouldInitiate = this.userId < peerId;
                 
                 if (shouldInitiate) {
-                    console.log(`🚀 Initiating WebRTC connection to ${nickname}`);
-                    setTimeout(async () => {
-                        // Small delay to ensure peer is ready
-                        await this.webrtcHandler.createPeerConnection(peerId, true);
-                    }, 500); // Increased delay for reconnections
+                    console.log(`[App] Will initiate WebRTC connection to ${nickname} (${peerId})`);
+                    
+                    // Try to establish connection with retry logic
+                    this.establishConnectionWithRetry(peerId, nickname, 3);
                 } else {
-                    console.log(`⏳ Waiting for ${nickname} to initiate connection`);
+                    console.log(`[App] Waiting for ${nickname} (${peerId}) to initiate connection`);
                 }
+            } else {
+                console.warn(`[App] Room full (${users.length} users), not connecting to ${nickname}`);
             }
             this.updatePeerCount();
         });
@@ -364,6 +412,71 @@ class P2PChatApp {
         }
     }
 
+    // Reconnect to the same room
+    async reconnect() {
+        if (!this.savedRoomId || !this.savedNickname) {
+            console.log('[App] No room data for reconnection');
+            return;
+        }
+        
+        console.log('[App] Reconnecting to room...');
+        const reconnectBtn = document.getElementById('reconnectBtn');
+        reconnectBtn.textContent = 'Reconnecting...';
+        reconnectBtn.disabled = true;
+        
+        try {
+            // Clean up existing connections
+            if (this.webrtcHandler) {
+                this.webrtcHandler.disconnect();
+                this.webrtcHandler = null;
+            }
+            
+            if (this.firebaseHandler && this.firebaseHandler.roomRef) {
+                await this.firebaseHandler.leaveRoom();
+            }
+            
+            // Clear messages
+            document.getElementById('messagesArea').innerHTML = '';
+            this.messageHandler.displaySystemMessage('Reconnecting to room...');
+            
+            // Generate new user ID for fresh connection
+            this.userId = this.generateUserId();
+            this.roomId = this.savedRoomId;
+            this.nickname = this.savedNickname;
+            
+            // Reset peers tracking
+            this.peers.clear();
+            this.peerNicknames.clear();
+            
+            // Reinitialize WebRTC
+            this.webrtcHandler = new WebRTCHandler(this.savedRoomId, this.userId);
+            this.setupWebRTCHandlers();
+            
+            // Reinitialize call handler
+            if (this.callHandler) {
+                this.callHandler.cleanup();
+            }
+            this.callHandler = new CallHandler(this.webrtcHandler, this.userId, this.nickname);
+            this.callHandler.initializeUI();
+            
+            // Setup file handler
+            this.setupFileHandlers();
+            
+            // Rejoin Firebase room
+            await this.firebaseHandler.joinRoom(this.savedRoomId, this.userId, this.savedNickname);
+            this.setupFirebaseHandlers();
+            
+            this.messageHandler.displaySystemMessage('✅ Reconnected successfully');
+            this.messageHandler.displaySystemMessage('⏳ Waiting for P2P connection to be established...');
+        } catch (error) {
+            console.error('[App] Reconnection failed:', error);
+            this.messageHandler.displaySystemMessage('❌ Reconnection failed. Please try again.');
+        } finally {
+            reconnectBtn.textContent = 'Reconnect';
+            reconnectBtn.disabled = false;
+        }
+    }
+
     // Update connection status indicator
     updateConnectionStatus(state) {
         this.connectionState = state;
@@ -373,17 +486,74 @@ class P2PChatApp {
             dot.classList.remove('active-green', 'active-yellow', 'active-red');
         });
         
+        const reconnectBtn = document.getElementById('reconnectBtn');
+        const callControls = document.getElementById('callControls');
+        
         switch (state) {
             case CONFIG.CONNECTION_STATE.CONNECTED:
                 dots[2].classList.add('active-green');
+                // Hide reconnect, show call controls if peers connected
+                if (reconnectBtn) reconnectBtn.style.display = 'none';
+                if (callControls && this.peers.size > 0) {
+                    callControls.style.display = 'flex';
+                }
                 break;
             case CONFIG.CONNECTION_STATE.CONNECTING:
                 dots[1].classList.add('active-yellow');
+                // Hide both during connecting
+                if (reconnectBtn) reconnectBtn.style.display = 'none';
+                if (callControls) callControls.style.display = 'none';
                 break;
             case CONFIG.CONNECTION_STATE.DISCONNECTED:
                 dots[0].classList.add('active-red');
+                // Show reconnect button when disconnected and we have saved room data
+                if (reconnectBtn && this.savedRoomId && this.peers.size === 0) {
+                    reconnectBtn.style.display = 'inline-block';
+                }
+                // Hide call controls when disconnected
+                if (callControls) callControls.style.display = 'none';
                 break;
         }
+    }
+
+    // Establish connection with retry logic
+    async establishConnectionWithRetry(peerId, nickname, retries = 3) {
+        for (let attempt = 1; attempt <= retries; attempt++) {
+            console.log(`[App] Connection attempt ${attempt}/${retries} to ${nickname}`);
+            
+            try {
+                // Check if already connected
+                const connectedPeers = this.webrtcHandler.getConnectedPeerIds();
+                if (connectedPeers.includes(peerId)) {
+                    console.log(`[App] Already connected to ${peerId}`);
+                    return;
+                }
+                
+                // Try to create connection
+                await this.webrtcHandler.createPeerConnection(peerId, true);
+                
+                // Wait a bit to see if connection establishes
+                await new Promise(resolve => setTimeout(resolve, 3000));
+                
+                // Check if connected
+                const connectedAfter = this.webrtcHandler.getConnectedPeerIds();
+                if (connectedAfter.includes(peerId)) {
+                    console.log(`[App] Successfully connected to ${peerId}`);
+                    return;
+                }
+                
+                console.log(`[App] Connection attempt ${attempt} failed, will retry...`);
+            } catch (error) {
+                console.error(`[App] Connection attempt ${attempt} error:`, error);
+            }
+            
+            // Wait before retry
+            if (attempt < retries) {
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+        }
+        
+        console.error(`[App] Failed to connect to ${nickname} after ${retries} attempts`);
     }
 
     // Update peer count display
@@ -394,6 +564,9 @@ class P2PChatApp {
             const users = await this.firebaseHandler.getRoomUsers();
             count = users.length - 1; // Exclude self
         }
+        
+        const connectedCount = this.webrtcHandler ? this.webrtcHandler.getConnectedPeersCount() : 0;
+        console.log(`[App] Updating peer count: ${connectedCount}/${count} connected`);
         
         const peerCountEl = document.getElementById('peerCount');
         peerCountEl.textContent = count === 1 ? '1 peer' : `${count} peers`;

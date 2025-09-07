@@ -184,6 +184,26 @@ body {
     font-size: 12px;
 }
 
+.reconnect-btn {
+    margin-left: 10px;
+    padding: 5px 12px;
+    background: #dc3545;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.3s;
+}
+
+.reconnect-btn:hover {
+    background: #c82333;
+}
+
+.reconnect-btn:active {
+    transform: scale(0.95);
+}
+
 /* Chat Container */
 .chat-container {
     flex: 1;

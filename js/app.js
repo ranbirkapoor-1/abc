@@ -9,6 +9,7 @@ class P2PChatApp {
         this.messageHandler = new MessageHandler();
         this.fileHandler = window.fileHandler;
         this.callHandler = null; // Will be initialized after joining room
+        this.reconnectionManager = null; // Will be initialized after room join
         this.peers = new Set();
         this.peerNicknames = new Map(); // Map of peerId -> nickname
         this.connectionState = CONFIG.CONNECTION_STATE.DISCONNECTED;
@@ -133,7 +134,12 @@ class P2PChatApp {
         const reconnectBtn = document.getElementById('reconnectBtn');
         if (reconnectBtn) {
             reconnectBtn.addEventListener('click', () => {
-                this.reconnect();
+                if (this.reconnectionManager) {
+                    this.reconnectionManager.manualReconnect();
+                } else {
+                    // Fallback to old reconnect method
+                    this.reconnect();
+                }
             });
         }
         
@@ -239,6 +245,12 @@ class P2PChatApp {
         this.messageHandler.displaySystemMessage(`Joined private room`);
         this.messageHandler.displaySystemMessage(`⏳ Waiting for P2P connection to be established...`);
         
+        // Initialize reconnection manager
+        this.reconnectionManager = new ReconnectionManager(this);
+        this.reconnectionManager.onStateChange((state) => {
+            console.log(`[App] Reconnection state: ${state}`);
+        });
+        
         // Update connection status
         this.updateConnectionStatus(CONFIG.CONNECTION_STATE.CONNECTING);
     }
@@ -297,7 +309,11 @@ class P2PChatApp {
                     // We still have peers in the room but lost WebRTC connections
                     console.log('[App] Lost all WebRTC connections but peers still in room');
                     this.updateConnectionStatus(CONFIG.CONNECTION_STATE.DISCONNECTED);
-                    this.messageHandler.displaySystemMessage('⚠️ Lost P2P connection. Click Reconnect to rejoin.');
+                    
+                    // Let reconnection manager handle this
+                    if (!this.reconnectionManager || this.reconnectionManager.reconnectionState === 'idle') {
+                        this.messageHandler.displaySystemMessage('⚠️ Lost P2P connection. Detecting issue...');
+                    }
                 } else {
                     // No peers at all - alone in room
                     this.updateConnectionStatus(CONFIG.CONNECTION_STATE.DISCONNECTED);
@@ -306,16 +322,42 @@ class P2PChatApp {
                 // Still have some connections
                 this.updateConnectionStatus(CONFIG.CONNECTION_STATE.CONNECTED);
             }
+            
+            // Update peer count
+            this.updatePeerCount();
         });
     }
 
     // Setup Firebase handlers
     setupFirebaseHandlers() {
+        // Handle Firebase connection state changes
+        this.firebaseHandler.onConnectionState((connected) => {
+            console.log(`[App] Firebase connection: ${connected ? 'ONLINE' : 'OFFLINE'}`);
+            if (!connected) {
+                this.messageHandler.displaySystemMessage('⚠️ Firebase connection lost. Attempting to reconnect...');
+            } else if (this.roomId) {
+                this.messageHandler.displaySystemMessage('✅ Firebase connection restored');
+            }
+            // Update peer count when Firebase state changes
+            this.updatePeerCount();
+        });
+        
         // Handle Firebase messages
         this.firebaseHandler.onMessage((message, senderId) => {
             if (this.messageHandler.receiveMessage(message, 'firebase')) {
                 // Message was new (not duplicate)
             }
+        });
+        
+        // Handle typing indicators
+        this.firebaseHandler.onTyping((typingUsers) => {
+            // Clear all typing indicators first
+            this.messageHandler.clearAllTyping();
+            
+            // Show typing for each user
+            typingUsers.forEach(user => {
+                this.messageHandler.handleTyping(user.userId, user.nickname, true);
+            });
         });
 
         // Handle peer joined
@@ -572,16 +614,20 @@ class P2PChatApp {
                 // Either: not in room, OR in room but lost all connections
                 dots[0].classList.add('active-red');
                 
-                // Show reconnect ONLY if:
-                // 1. We were in a room (have savedRoomId)
-                // 2. We still want to be in that room (have roomId)
-                // 3. We have peers but no P2P connections
-                const inRoom = this.savedRoomId && this.roomId;
-                const hasPeersButNoP2P = this.peers.size > 0 && 
-                    (!this.webrtcHandler || this.webrtcHandler.getConnectedPeersCount() === 0);
-                
-                if (reconnectBtn) {
-                    reconnectBtn.style.display = (inRoom && hasPeersButNoP2P) ? 'inline-block' : 'none';
+                // Let reconnection manager handle the reconnect button
+                // Only show manually if no reconnection manager or it's not handling it
+                if (!this.reconnectionManager || this.reconnectionManager.reconnectionState === 'idle') {
+                    // Show reconnect ONLY if:
+                    // 1. We were in a room (have savedRoomId)
+                    // 2. We still want to be in that room (have roomId)
+                    // 3. We have peers but no P2P connections
+                    const inRoom = this.savedRoomId && this.roomId;
+                    const hasPeersButNoP2P = this.peers.size > 0 && 
+                        (!this.webrtcHandler || this.webrtcHandler.getConnectedPeersCount() === 0);
+                    
+                    if (reconnectBtn) {
+                        reconnectBtn.style.display = (inRoom && hasPeersButNoP2P) ? 'inline-block' : 'none';
+                    }
                 }
                 
                 // No calls when disconnected
@@ -745,6 +791,12 @@ class P2PChatApp {
 
     // Leave room and cleanup
     leaveRoom() {
+        // Clean up reconnection manager
+        if (this.reconnectionManager) {
+            this.reconnectionManager.cleanup();
+            this.reconnectionManager = null;
+        }
+        
         if (this.webrtcHandler) {
             this.webrtcHandler.disconnect();
         }

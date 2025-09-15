@@ -158,6 +158,22 @@ class MessageHandler {
             typingIndicator.classList.remove('active');
         }
     }
+    
+    // Clear all typing indicators
+    clearAllTyping() {
+        // Clear all timers
+        this.typingTimers.forEach((userData, userId) => {
+            clearTimeout(userData.timer);
+        });
+        this.typingTimers.clear();
+        
+        // Hide indicator
+        const typingIndicator = document.getElementById('typingIndicator');
+        if (typingIndicator) {
+            typingIndicator.style.display = 'none';
+            typingIndicator.classList.remove('active');
+        }
+    }
 
     // Display message in UI
     displayMessage(message, isSent = false) {

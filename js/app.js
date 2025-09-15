@@ -527,10 +527,16 @@ class P2PChatApp {
                 break;
             case CONFIG.CONNECTION_STATE.DISCONNECTED:
                 dots[0].classList.add('active-red');
-                // Show reconnect button when disconnected and we have saved room data
-                // Show even if peers.size > 0 because we might be disconnected from Firebase
-                if (reconnectBtn && this.savedRoomId) {
+                // Only show reconnect button if WE are disconnected (no peers and no Firebase)
+                // Check if we've lost connection to Firebase or all peers
+                const hasLostConnection = this.savedRoomId && 
+                    (!this.firebaseHandler || !this.firebaseHandler.roomRef || 
+                     (this.peers.size === 0 && this.roomId));
+                
+                if (reconnectBtn && hasLostConnection) {
                     reconnectBtn.style.display = 'inline-block';
+                } else if (reconnectBtn) {
+                    reconnectBtn.style.display = 'none';
                 }
                 // Hide call controls when disconnected
                 if (callControls) callControls.style.display = 'none';

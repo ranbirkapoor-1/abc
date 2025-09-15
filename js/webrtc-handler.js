@@ -449,7 +449,7 @@ class WebRTCHandler {
                 if (pc.iceConnectionState === 'disconnected') {
                     console.log(`[WebRTC] Checking disconnected peer ${peerId} after file selection`);
                     // Connection might have been waiting for file selection to end
-                    // Give it a short grace period to reconnect
+                    // Give it standard grace period to reconnect
                     if (this.disconnectTimeouts.has(peerId)) {
                         clearTimeout(this.disconnectTimeouts.get(peerId));
                         const timeout = setTimeout(() => {
@@ -458,7 +458,7 @@ class WebRTCHandler {
                                 console.log(`[WebRTC] Disconnecting ${peerId} after file selection ended`);
                                 this.handlePeerDisconnected(peerId);
                             }
-                        }, 10000); // 10 seconds grace period after file selection
+                        }, 30000); // 30 seconds grace period after file selection
                         this.disconnectTimeouts.set(peerId, timeout);
                     }
                 }

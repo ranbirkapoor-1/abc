@@ -85,12 +85,14 @@ class CallHandler {
         this.muteBtn = document.getElementById('muteBtn');
         this.videoToggleBtn = document.getElementById('videoToggleBtn');
         this.localVideo = document.getElementById('localVideo');
-        this.remoteVideo = document.getElementById('remoteVideo');
-        this.remoteAudio = document.getElementById('remoteAudio');
+        this.videosGrid = document.getElementById('videosGrid'); // Grid container for multiple videos
         this.callStatus = document.getElementById('callStatus');
         this.callTimer = document.getElementById('callTimer');
         this.callerName = document.getElementById('callerName');
         this.callControls = document.getElementById('callControls');
+        
+        // Map to store video elements for each peer
+        this.peerVideoElements = new Map();
         
         // Setup event listeners
         this.setupEventListeners();
@@ -240,7 +242,7 @@ class CallHandler {
                     console.log('Track id:', event.track.id);
                     console.log('Track enabled:', event.track.enabled);
                     console.log('Streams count:', event.streams.length);
-                    this.handleRemoteStream(event.streams[0]);
+                    this.handleRemoteStream(event.streams[0], targetPeerId);
                 };
             }
             
@@ -383,7 +385,7 @@ class CallHandler {
                     console.log('Track id:', event.track.id);
                     console.log('Track enabled:', event.track.enabled);
                     console.log('Streams count:', event.streams.length);
-                    this.handleRemoteStream(event.streams[0]);
+                    this.handleRemoteStream(event.streams[0], message.from);
                 };
                 
                 // Don't add tracks or create answer yet - wait for media offer
@@ -492,12 +494,22 @@ class CallHandler {
     }
     
     // Handle remote stream
-    handleRemoteStream(stream) {
+    handleRemoteStream(stream, peerId) {
         console.log('=== HANDLING REMOTE STREAM ===');
-        this.remoteStream = stream;
+        console.log(`Stream for peer: ${peerId}`);
         
         if (!stream) {
             console.error('No stream provided!');
+            return;
+        }
+        
+        // Store stream for this peer
+        if (!peerId && this.currentCall) {
+            peerId = this.currentCall.peerId;
+        }
+        
+        if (!peerId) {
+            console.error('No peer ID available for remote stream');
             return;
         }
         
@@ -507,45 +519,33 @@ class CallHandler {
             console.log(`  - ${track.kind}: ${track.id}, enabled: ${track.enabled}, muted: ${track.muted}, readyState: ${track.readyState}`);
         });
         
-        // Separate audio and video tracks
+        // Store stream in map
+        this.remoteStreams.set(peerId, stream);
+        
+        // Use new method to set peer stream
+        this.setPeerRemoteStream(peerId, stream);
+        
+        // Update status
         const audioTracks = stream.getAudioTracks();
         const videoTracks = stream.getVideoTracks();
-        
         console.log(`Audio tracks: ${audioTracks.length}, Video tracks: ${videoTracks.length}`);
         
-        // Handle audio
-        if (audioTracks.length > 0 && this.remoteAudio) {
-            console.log('Setting remote audio stream');
-            const audioStream = new MediaStream([audioTracks[0]]);
-            this.remoteAudio.srcObject = audioStream;
-            console.log('Remote audio element:', this.remoteAudio);
-            console.log('Remote audio muted?', this.remoteAudio.muted);
-            console.log('Remote audio volume:', this.remoteAudio.volume);
-            
-            // Force play
-            this.remoteAudio.play().then(() => {
-                console.log('Remote audio playing');
-            }).catch(err => {
-                console.error('Error playing remote audio:', err);
-            });
-        }
-        
-        // Handle video
-        if (videoTracks.length > 0 && this.remoteVideo) {
-            console.log('Setting remote video stream');
-            const videoStream = new MediaStream([videoTracks[0]]);
-            this.remoteVideo.srcObject = videoStream;
-            this.remoteVideo.style.display = 'block';
-            
-            // Force play
-            this.remoteVideo.play().then(() => {
-                console.log('Remote video playing');
-            }).catch(err => {
-                console.error('Error playing remote video:', err);
-            });
-        } else if (this.remoteVideo) {
-            console.log('No video tracks, hiding video element');
-            this.remoteVideo.style.display = 'none';
+        // Play the stream
+        const elements = this.peerVideoElements.get(peerId);
+        if (elements) {
+            if (videoTracks.length > 0 && elements.video) {
+                elements.video.play().then(() => {
+                    console.log(`Remote video playing for ${peerId}`);
+                }).catch(err => {
+                    console.error(`Error playing remote video for ${peerId}:`, err);
+                });
+            } else if (audioTracks.length > 0 && elements.audio) {
+                elements.audio.play().then(() => {
+                    console.log(`Remote audio playing for ${peerId}`);
+                }).catch(err => {
+                    console.error(`Error playing remote audio for ${peerId}:`, err);
+                });
+            }
         }
     }
     
@@ -645,10 +645,17 @@ class CallHandler {
         // Hide/show video elements based on call type
         if (!this.currentCall?.isVideo) {
             if (this.localVideo) this.localVideo.parentElement.style.display = 'none';
-            if (this.remoteVideo) this.remoteVideo.style.display = 'none';
+            // Hide videos grid for audio-only calls
+            if (this.videosGrid) {
+                this.videosGrid.style.display = 'none';
+            }
             if (this.videoToggleBtn) this.videoToggleBtn.style.display = 'none';
         } else {
             if (this.localVideo) this.localVideo.parentElement.style.display = 'block';
+            // Show videos grid for video calls
+            if (this.videosGrid) {
+                this.videosGrid.style.display = 'grid';
+            }
             if (this.videoToggleBtn) this.videoToggleBtn.style.display = 'flex';
         }
     }
@@ -723,12 +730,20 @@ class CallHandler {
     
     // Stop remote stream
     stopRemoteStream() {
-        this.remoteStream = null;
-        if (this.remoteVideo) {
-            this.remoteVideo.srcObject = null;
-        }
-        if (this.remoteAudio) {
-            this.remoteAudio.srcObject = null;
+        // Stop all remote streams
+        this.remoteStreams.forEach((stream, peerId) => {
+            stream.getTracks().forEach(track => track.stop());
+            this.removePeerVideoElement(peerId);
+        });
+        this.remoteStreams.clear();
+        
+        // Clear the grid but keep the call info
+        if (this.videosGrid) {
+            const callInfo = this.videosGrid.querySelector('.call-info');
+            this.videosGrid.innerHTML = '';
+            if (callInfo) {
+                this.videosGrid.appendChild(callInfo);
+            }
         }
     }
     
@@ -846,6 +861,126 @@ class CallHandler {
                 });
             } catch (error) {
                 console.error('Error handling media answer:', error);
+            }
+        }
+    }
+    
+    // Create video element for a peer
+    createPeerVideoElement(peerId, peerNickname) {
+        // Check if element already exists
+        if (this.peerVideoElements.has(peerId)) {
+            return this.peerVideoElements.get(peerId);
+        }
+        
+        // Create container
+        const container = document.createElement('div');
+        container.className = 'peer-video-container';
+        container.id = `peer-video-${peerId}`;
+        
+        // Create video element
+        const video = document.createElement('video');
+        video.autoplay = true;
+        video.playsinline = true;
+        video.id = `video-${peerId}`;
+        
+        // Create audio element (for audio-only calls)
+        const audio = document.createElement('audio');
+        audio.autoplay = true;
+        audio.id = `audio-${peerId}`;
+        
+        // Create label
+        const label = document.createElement('div');
+        label.className = 'peer-video-label';
+        label.textContent = peerNickname || 'Peer';
+        
+        // Append elements
+        container.appendChild(video);
+        container.appendChild(audio);
+        container.appendChild(label);
+        
+        // Add to grid
+        if (this.videosGrid) {
+            this.videosGrid.appendChild(container);
+            this.updateVideoGridLayout();
+        }
+        
+        // Store references
+        this.peerVideoElements.set(peerId, {
+            container: container,
+            video: video,
+            audio: audio,
+            label: label
+        });
+        
+        return this.peerVideoElements.get(peerId);
+    }
+    
+    // Remove video element for a peer
+    removePeerVideoElement(peerId) {
+        const elements = this.peerVideoElements.get(peerId);
+        if (elements) {
+            // Stop tracks
+            if (elements.video.srcObject) {
+                elements.video.srcObject.getTracks().forEach(track => track.stop());
+            }
+            if (elements.audio.srcObject) {
+                elements.audio.srcObject.getTracks().forEach(track => track.stop());
+            }
+            
+            // Remove from DOM
+            elements.container.remove();
+            
+            // Remove from map
+            this.peerVideoElements.delete(peerId);
+            
+            // Update layout
+            this.updateVideoGridLayout();
+        }
+    }
+    
+    // Update video grid layout based on number of participants
+    updateVideoGridLayout() {
+        if (!this.videosGrid) return;
+        
+        const participantCount = this.peerVideoElements.size;
+        
+        // Remove all participant classes
+        this.videosGrid.classList.remove(
+            'participants-1', 'participants-2', 'participants-3',
+            'participants-4', 'participants-5', 'participants-6'
+        );
+        
+        // Add appropriate class
+        if (participantCount <= 6) {
+            this.videosGrid.classList.add(`participants-${participantCount}`);
+        }
+    }
+    
+    // Set remote stream for a specific peer
+    setPeerRemoteStream(peerId, stream) {
+        const elements = this.peerVideoElements.get(peerId);
+        if (!elements) {
+            // Create element if it doesn't exist
+            const peerNickname = window.chatApp?.peerNicknames?.get(peerId) || 'Peer';
+            this.createPeerVideoElement(peerId, peerNickname);
+            elements = this.peerVideoElements.get(peerId);
+        }
+        
+        if (elements) {
+            // Check if stream has video tracks
+            const videoTracks = stream.getVideoTracks();
+            const audioTracks = stream.getAudioTracks();
+            
+            if (videoTracks.length > 0) {
+                // Video call
+                elements.video.srcObject = stream;
+                elements.video.style.display = 'block';
+                elements.audio.style.display = 'none';
+            } else if (audioTracks.length > 0) {
+                // Audio-only call
+                elements.audio.srcObject = stream;
+                elements.video.style.display = 'none';
+                // Could show an avatar or placeholder for audio-only
             }
         }
     }

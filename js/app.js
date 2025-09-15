@@ -27,15 +27,26 @@ class P2PChatApp {
 
     // Initialize the application
     init() {
+        console.log('[App] Initializing P2P Chat Application...');
+        console.log('[App] User ID:', this.userId);
+        console.log('[App] Firebase Handler:', this.firebaseHandler ? 'Found' : 'Missing');
+        
         this.setupEventListeners();
         this.setupMessageHandlers();
         
         // Initialize Firebase when ready
         if (this.firebaseHandler) {
-            this.firebaseHandler.initialize().catch(err => {
-                console.warn('Firebase initialization failed:', err);
-                this.updateConnectionStatus(CONFIG.CONNECTION_STATE.DISCONNECTED);
-            });
+            console.log('[App] Initializing Firebase...');
+            this.firebaseHandler.initialize()
+                .then(result => {
+                    console.log('[App] Firebase initialization result:', result);
+                })
+                .catch(err => {
+                    console.error('[App] Firebase initialization failed:', err);
+                    this.updateConnectionStatus(CONFIG.CONNECTION_STATE.DISCONNECTED);
+                });
+        } else {
+            console.error('[App] Firebase Handler not found! Check if firebase-handler.js is loaded properly.');
         }
     }
 
@@ -237,8 +248,19 @@ class P2PChatApp {
         
         // Join Firebase room with nickname
         if (this.firebaseHandler) {
-            await this.firebaseHandler.joinRoom(roomId, this.userId, this.nickname);
-            this.setupFirebaseHandlers();
+            console.log('[App] Joining Firebase room:', roomId);
+            const joinResult = await this.firebaseHandler.joinRoom(roomId, this.userId, this.nickname);
+            console.log('[App] Firebase room join result:', joinResult);
+            
+            if (joinResult) {
+                console.log('[App] Setting up Firebase handlers...');
+                this.setupFirebaseHandlers();
+            } else {
+                console.error('[App] Failed to join Firebase room!');
+                this.messageHandler.displaySystemMessage('⚠️ Failed to connect to Firebase. Running in offline mode.');
+            }
+        } else {
+            console.error('[App] Firebase handler not available!');
         }
         
         // Display system message with loading indicator

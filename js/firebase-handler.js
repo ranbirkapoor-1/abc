@@ -29,17 +29,33 @@ class FirebaseHandler {
 
     // Initialize Firebase with proper error handling
     async initialize() {
+        console.log('[Firebase] Starting initialization...');
+        console.log('[Firebase] Config:', CONFIG.FIREBASE_CONFIG ? 'Found' : 'Missing');
+        
         try {
+            // Check if Firebase SDK is loaded
+            if (typeof firebase === 'undefined') {
+                console.error('[Firebase] Firebase SDK not loaded!');
+                return false;
+            }
+            
             // Check if already initialized
             if (firebase.apps.length > 0) {
-                console.log('[Firebase] Already initialized');
+                console.log('[Firebase] Already initialized, reusing existing app');
                 this.db = firebase.database();
             } else {
                 // Initialize Firebase with config
+                console.log('[Firebase] Initializing new Firebase app...');
                 firebase.initializeApp(CONFIG.FIREBASE_CONFIG);
                 this.db = firebase.database();
                 console.log('[Firebase] ✅ Initialized successfully');
             }
+            
+            // Test database connection
+            const testRef = this.db.ref('.info/connected');
+            testRef.once('value', (snapshot) => {
+                console.log('[Firebase] Database connection test:', snapshot.val() ? 'CONNECTED' : 'NOT CONNECTED');
+            });
             
             // Monitor connection state
             this.setupConnectionMonitoring();
@@ -47,6 +63,7 @@ class FirebaseHandler {
             return true;
         } catch (error) {
             console.error('[Firebase] Initialization error:', error);
+            console.error('[Firebase] Error details:', error.message, error.stack);
             return false;
         }
     }
@@ -562,5 +579,8 @@ class FirebaseHandler {
     }
 }
 
-// Export
+// Create global instance
+window.firebaseHandler = new FirebaseHandler();
+
+// Also export the class if needed
 window.FirebaseHandler = FirebaseHandler;

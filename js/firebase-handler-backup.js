@@ -271,5 +271,5 @@ class FirebaseHandler {
     }
 }
 
-// Create global instance
-window.firebaseHandler = new FirebaseHandler();
+// Backup file - not creating global instance to avoid conflicts
+// window.firebaseHandler = new FirebaseHandler();

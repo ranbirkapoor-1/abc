@@ -417,8 +417,21 @@ class FirebaseHandler {
         }
     }
 
-    // Send WebRTC signal
-    async sendSignal(targetPeer, signalData) {
+    // Send WebRTC signal (compatible with webrtc-handler call signature)
+    async sendSignal(roomId, fromId, toId, signalData) {
+        // Support both call signatures for compatibility
+        let targetPeer, signal;
+        
+        if (arguments.length === 2) {
+            // Called with (targetPeer, signalData)
+            targetPeer = roomId;
+            signal = fromId;
+        } else {
+            // Called with (roomId, fromId, toId, signalData)
+            targetPeer = toId;
+            signal = signalData;
+        }
+        
         if (!this.roomRef || !this.userId) {
             console.error('[Firebase] Cannot send signal - not in room');
             return false;
@@ -428,11 +441,11 @@ class FirebaseHandler {
             const signalRef = this.roomRef.child(`signals/${targetPeer}`);
             await signalRef.push({
                 from: this.userId,
-                data: signalData,
+                data: signal,
                 timestamp: firebase.database.ServerValue.TIMESTAMP
             });
             
-            console.log(`[Firebase] Signal sent to ${targetPeer}: ${signalData.type}`);
+            console.log(`[Firebase] Signal sent to ${targetPeer}: ${signal.type}`);
             return true;
         } catch (error) {
             console.error('[Firebase] Error sending signal:', error);

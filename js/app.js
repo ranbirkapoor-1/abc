@@ -290,12 +290,21 @@ class P2PChatApp {
             // Don't show any message here - it will be shown in onPeerLeft
             // Update connection status based on remaining connections
             const connectedCount = this.webrtcHandler.getConnectedPeersCount();
-            if (connectedCount === 0 && this.peers.size > 0) {
-                // We have peers but no WebRTC connections - connecting state
-                this.updateConnectionStatus(CONFIG.CONNECTION_STATE.CONNECTING);
-            } else if (connectedCount === 0 && this.peers.size === 0) {
-                // No peers at all - disconnected state  
-                this.updateConnectionStatus(CONFIG.CONNECTION_STATE.DISCONNECTED);
+            
+            if (connectedCount === 0) {
+                // No WebRTC connections left
+                if (this.peers.size > 0) {
+                    // We still have peers in the room but lost WebRTC connections
+                    console.log('[App] Lost all WebRTC connections but peers still in room');
+                    this.updateConnectionStatus(CONFIG.CONNECTION_STATE.DISCONNECTED);
+                    this.messageHandler.displaySystemMessage('⚠️ Lost P2P connection. Click Reconnect to rejoin.');
+                } else {
+                    // No peers at all - alone in room
+                    this.updateConnectionStatus(CONFIG.CONNECTION_STATE.DISCONNECTED);
+                }
+            } else {
+                // Still have some connections
+                this.updateConnectionStatus(CONFIG.CONNECTION_STATE.CONNECTED);
             }
         });
     }
@@ -437,39 +446,43 @@ class P2PChatApp {
     async reconnect() {
         if (!this.savedRoomId || !this.savedNickname) {
             console.log('[App] No room data for reconnection');
+            alert('No room to reconnect to. Please join a room first.');
             return;
         }
         
-        console.log('[App] Reconnecting to room...');
+        console.log(`[App] Reconnecting to room ${this.savedRoomId}...`);
         const reconnectBtn = document.getElementById('reconnectBtn');
         reconnectBtn.textContent = 'Reconnecting...';
         reconnectBtn.disabled = true;
         
         try {
-            // Clean up existing connections
+            // Only clean up WebRTC, keep Firebase if still connected
             if (this.webrtcHandler) {
+                console.log('[App] Cleaning up old WebRTC connections');
                 this.webrtcHandler.disconnect();
                 this.webrtcHandler = null;
             }
             
-            if (this.firebaseHandler && this.firebaseHandler.roomRef) {
-                await this.firebaseHandler.leaveRoom();
+            // Check if we need to rejoin Firebase
+            const needsFirebaseRejoin = !this.firebaseHandler || !this.firebaseHandler.roomRef;
+            
+            if (needsFirebaseRejoin) {
+                console.log('[App] Need to rejoin Firebase room');
+                // Generate new user ID only if we lost Firebase connection
+                this.userId = this.generateUserId();
+                
+                // Clear peers since we're rejoining fresh
+                this.peers.clear();
+                this.peerNicknames.clear();
             }
             
-            // Clear messages
-            document.getElementById('messagesArea').innerHTML = '';
-            this.messageHandler.displaySystemMessage('Reconnecting to room...');
-            
-            // Generate new user ID for fresh connection
-            this.userId = this.generateUserId();
+            // Keep the same room and nickname
             this.roomId = this.savedRoomId;
             this.nickname = this.savedNickname;
             
-            // Reset peers tracking
-            this.peers.clear();
-            this.peerNicknames.clear();
+            this.messageHandler.displaySystemMessage('🔄 Reconnecting to P2P network...');
             
-            // Reinitialize WebRTC
+            // Reinitialize WebRTC with current user ID
             this.webrtcHandler = new WebRTCHandler(this.savedRoomId, this.userId);
             this.setupWebRTCHandlers();
             
@@ -483,12 +496,24 @@ class P2PChatApp {
             // Setup file handler
             this.setupFileHandlers();
             
-            // Rejoin Firebase room
-            await this.firebaseHandler.joinRoom(this.savedRoomId, this.userId, this.savedNickname);
-            this.setupFirebaseHandlers();
+            // Only rejoin Firebase if needed
+            if (needsFirebaseRejoin) {
+                await this.firebaseHandler.joinRoom(this.savedRoomId, this.userId, this.savedNickname);
+                this.setupFirebaseHandlers();
+            } else {
+                console.log('[App] Still connected to Firebase, triggering peer connections');
+                // Trigger reconnection to existing peers
+                const users = await this.firebaseHandler.getRoomUsers();
+                for (const user of users) {
+                    if (user.id !== this.userId) {
+                        // Trigger connection attempt
+                        this.firebaseHandler.onPeerJoinedCallback(user.id, user.nickname, true);
+                    }
+                }
+            }
             
-            this.messageHandler.displaySystemMessage('✅ Reconnected successfully');
-            this.messageHandler.displaySystemMessage('⏳ Waiting for P2P connection to be established...');
+            this.messageHandler.displaySystemMessage('✅ Reconnected to room');
+            this.messageHandler.displaySystemMessage('⏳ Establishing P2P connections...');
         } catch (error) {
             console.error('[App] Reconnection failed:', error);
             this.messageHandler.displaySystemMessage('❌ Reconnection failed. Please try again.');
@@ -527,16 +552,15 @@ class P2PChatApp {
                 break;
             case CONFIG.CONNECTION_STATE.DISCONNECTED:
                 dots[0].classList.add('active-red');
-                // Only show reconnect button if WE are disconnected (no peers and no Firebase)
-                // Check if we've lost connection to Firebase or all peers
-                const hasLostConnection = this.savedRoomId && 
-                    (!this.firebaseHandler || !this.firebaseHandler.roomRef || 
-                     (this.peers.size === 0 && this.roomId));
+                // Show reconnect button when:
+                // 1. We have a saved room ID (we were in a room)
+                // 2. We're not currently connected via WebRTC
+                // This happens when WebRTC disconnects but we might still be in Firebase room
+                const shouldShowReconnect = this.savedRoomId && this.roomId && 
+                    (!this.webrtcHandler || !this.webrtcHandler.isConnected());
                 
-                if (reconnectBtn && hasLostConnection) {
-                    reconnectBtn.style.display = 'inline-block';
-                } else if (reconnectBtn) {
-                    reconnectBtn.style.display = 'none';
+                if (reconnectBtn) {
+                    reconnectBtn.style.display = shouldShowReconnect ? 'inline-block' : 'none';
                 }
                 // Hide call controls when disconnected
                 if (callControls) callControls.style.display = 'none';

@@ -984,6 +984,37 @@ class CallHandler {
             }
         }
     }
+    
+    // Cleanup call handler
+    cleanup() {
+        // End any active call
+        if (this.currentCall) {
+            this.endCall();
+        }
+        
+        // Stop all streams
+        this.stopLocalStream();
+        this.stopRemoteStream();
+        
+        // Clear all peer video elements
+        this.peerVideoElements.forEach((elements, peerId) => {
+            this.removePeerVideoElement(peerId);
+        });
+        this.peerVideoElements.clear();
+        
+        // Reset state
+        this.currentCall = null;
+        this.localStream = null;
+        this.remoteStreams.clear();
+        this.activePeers.clear();
+        
+        // Stop timer
+        this.stopCallTimer();
+        
+        // Hide interfaces
+        this.hideCallInterface();
+        this.hideIncomingCallModal();
+    }
 }
 
 // Export

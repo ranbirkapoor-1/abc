@@ -95,9 +95,8 @@
     <!-- Call Interface -->
     <div class="call-interface" id="callInterface" style="display: none;">
         <div class="call-container">
-            <div class="remote-video-container">
-                <video id="remoteVideo" autoplay playsinline></video>
-                <audio id="remoteAudio" autoplay></audio>
+            <div class="videos-grid" id="videosGrid">
+                <!-- Dynamic video elements will be added here for each peer -->
                 <div class="call-info">
                     <div class="call-status" id="callStatus">Connecting...</div>
                     <div class="call-timer" id="callTimer">00:00</div>
@@ -105,6 +104,7 @@
             </div>
             <div class="local-video-container">
                 <video id="localVideo" autoplay playsinline muted></video>
+                <div class="local-video-label">You</div>
             </div>
             <div class="call-actions">
                 <button class="call-action-btn mute-btn" id="muteBtn" title="Mute/Unmute">

@@ -15,6 +15,12 @@ class P2PChatApp {
         this.savedRoomId = null; // Store for reconnection
         this.savedNickname = null; // Store for reconnection
         
+        // Page visibility handling
+        this.isPageVisible = true;
+        this.hiddenTimestamp = null;
+        this.disconnectTimer = null;
+        this.wasConnectedBeforeHidden = false;
+        
         this.init();
     }
 
@@ -39,6 +45,9 @@ class P2PChatApp {
 
     // Setup UI event listeners
     setupEventListeners() {
+        // Setup page visibility handling
+        this.setupPageVisibilityHandling();
+        
         // Join room button
         const joinBtn = document.getElementById('joinBtn');
         const roomInput = document.getElementById('roomInput');
@@ -331,17 +340,29 @@ class P2PChatApp {
             console.log(`[App] Room has ${users.length} users`);
             
             if (users.length <= CONFIG.MAX_PEERS) {
-                // Important: Only ONE peer should initiate to avoid duplicate connections
-                // Use consistent rule: peer with lexicographically SMALLER ID initiates
-                const shouldInitiate = this.userId < peerId;
+                // Check if already connected to this peer
+                const connectedPeers = this.webrtcHandler ? this.webrtcHandler.getConnectedPeerIds() : [];
+                const isAlreadyConnected = connectedPeers.includes(peerId);
                 
-                if (shouldInitiate) {
-                    console.log(`[App] Will initiate WebRTC connection to ${nickname} (${peerId})`);
-                    
-                    // Try to establish connection with retry logic
-                    this.establishConnectionWithRetry(peerId, nickname, 3);
+                if (isAlreadyConnected) {
+                    console.log(`[App] Already connected to ${nickname} (${peerId})`);
                 } else {
-                    console.log(`[App] Waiting for ${nickname} (${peerId}) to initiate connection`);
+                    // Important: Only ONE peer should initiate to avoid duplicate connections
+                    // Use consistent rule: peer with lexicographically SMALLER ID initiates
+                    const shouldInitiate = this.userId < peerId;
+                    
+                    if (shouldInitiate) {
+                        console.log(`[App] Will initiate WebRTC connection to ${nickname} (${peerId})`);
+                        
+                        // Small delay for existing users to avoid connection storms
+                        const delay = isExistingUser ? Math.random() * 1000 : 0;
+                        setTimeout(() => {
+                            // Try to establish connection with retry logic
+                            this.establishConnectionWithRetry(peerId, nickname, 3);
+                        }, delay);
+                    } else {
+                        console.log(`[App] Waiting for ${nickname} (${peerId}) to initiate connection`);
+                    }
                 }
             } else {
                 console.warn(`[App] Room full (${users.length} users), not connecting to ${nickname}`);
@@ -483,7 +504,7 @@ class P2PChatApp {
         
         const dots = document.querySelectorAll('.status-dot');
         dots.forEach(dot => {
-            dot.classList.remove('active-green', 'active-yellow', 'active-red');
+            dot.classList.remove('active-green', 'active-yellow', 'active-red', 'paused');
         });
         
         const reconnectBtn = document.getElementById('reconnectBtn');
@@ -507,12 +528,35 @@ class P2PChatApp {
             case CONFIG.CONNECTION_STATE.DISCONNECTED:
                 dots[0].classList.add('active-red');
                 // Show reconnect button when disconnected and we have saved room data
-                if (reconnectBtn && this.savedRoomId && this.peers.size === 0) {
+                // Show even if peers.size > 0 because we might be disconnected from Firebase
+                if (reconnectBtn && this.savedRoomId) {
                     reconnectBtn.style.display = 'inline-block';
                 }
                 // Hide call controls when disconnected
                 if (callControls) callControls.style.display = 'none';
                 break;
+        }
+    }
+
+    // Update connection status to paused
+    updateConnectionStatusPaused() {
+        const dots = document.querySelectorAll('.status-dot');
+        dots.forEach(dot => {
+            dot.classList.remove('active-green', 'active-yellow', 'active-red');
+            dot.classList.add('paused');
+        });
+        
+        const reconnectBtn = document.getElementById('reconnectBtn');
+        const callControls = document.getElementById('callControls');
+        
+        // Hide reconnect button and call controls in paused state
+        if (reconnectBtn) reconnectBtn.style.display = 'none';
+        if (callControls) callControls.style.display = 'none';
+        
+        // Update peer count to show paused state
+        const peerCountEl = document.getElementById('peerCount');
+        if (peerCountEl) {
+            peerCountEl.textContent = 'Paused';
         }
     }
 
@@ -558,23 +602,36 @@ class P2PChatApp {
 
     // Update peer count display
     async updatePeerCount() {
-        let count = 0;
+        let totalUsers = 0;
         
         if (this.firebaseHandler && this.firebaseHandler.roomRef) {
             const users = await this.firebaseHandler.getRoomUsers();
-            count = users.length - 1; // Exclude self
+            totalUsers = users.length; // This already includes self
+        }
+        
+        // If no Firebase connection, at least count self
+        if (totalUsers === 0 && this.roomId) {
+            totalUsers = 1; // Count self
         }
         
         const connectedCount = this.webrtcHandler ? this.webrtcHandler.getConnectedPeersCount() : 0;
-        console.log(`[App] Updating peer count: ${connectedCount}/${count} connected`);
+        console.log(`[App] Updating peer count: ${connectedCount} P2P connected, ${totalUsers} total in room`);
         
         const peerCountEl = document.getElementById('peerCount');
-        peerCountEl.textContent = count === 1 ? '1 peer' : `${count} peers`;
+        // Show total users in room (including self)
+        if (peerCountEl) {
+            peerCountEl.textContent = totalUsers === 0 ? 'Connecting...' : 
+                                      totalUsers === 1 ? 'You (1 user)' : 
+                                      `${totalUsers} users`;
+        }
         
         // Update connection status based on WebRTC connections
         if (this.webrtcHandler && this.webrtcHandler.isConnected()) {
             this.updateConnectionStatus(CONFIG.CONNECTION_STATE.CONNECTED);
-        } else if (count > 0) {
+        } else if (connectedCount > 0) {
+            this.updateConnectionStatus(CONFIG.CONNECTION_STATE.CONNECTING);
+        } else if (totalUsers > 1) {
+            // We have peers but no connections yet
             this.updateConnectionStatus(CONFIG.CONNECTION_STATE.CONNECTING);
         } else {
             this.updateConnectionStatus(CONFIG.CONNECTION_STATE.DISCONNECTED);
@@ -718,6 +775,182 @@ class P2PChatApp {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+    
+    // Setup page visibility handling
+    setupPageVisibilityHandling() {
+        // Handle visibility change events
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                this.handlePageHidden();
+            } else {
+                this.handlePageVisible();
+            }
+        });
+        
+        // Also handle window blur/focus for additional coverage
+        window.addEventListener('blur', () => {
+            // Only handle if page is actually hidden (not just unfocused)
+            if (document.hidden) {
+                this.handlePageHidden();
+            }
+        });
+        
+        window.addEventListener('focus', () => {
+            if (!document.hidden) {
+                this.handlePageVisible();
+            }
+        });
+        
+        // Handle page unload (closing tab/window)
+        window.addEventListener('beforeunload', () => {
+            this.handlePageUnload();
+        });
+    }
+    
+    // Handle when page becomes hidden
+    handlePageHidden() {
+        if (!this.isPageVisible) return; // Already handled
+        
+        console.log('[App] Page hidden, starting 30-second timer');
+        this.isPageVisible = false;
+        this.hiddenTimestamp = Date.now();
+        
+        // Store connection state before hiding
+        this.wasConnectedBeforeHidden = this.connectionState === CONFIG.CONNECTION_STATE.CONNECTED;
+        
+        // Show system message
+        if (this.roomId) {
+            this.messageHandler.displaySystemMessage('⏸️ Tab inactive - connection will pause in 30 seconds');
+        }
+        
+        // Start 30-second timer
+        this.disconnectTimer = setTimeout(() => {
+            if (!this.isPageVisible && this.roomId) {
+                console.log('[App] 30 seconds elapsed, pausing connections');
+                this.pauseConnections();
+            }
+        }, 30000); // 30 seconds
+    }
+    
+    // Handle when page becomes visible
+    handlePageVisible() {
+        if (this.isPageVisible) return; // Already visible
+        
+        console.log('[App] Page visible again');
+        this.isPageVisible = true;
+        
+        // Clear disconnect timer if it exists
+        if (this.disconnectTimer) {
+            clearTimeout(this.disconnectTimer);
+            this.disconnectTimer = null;
+        }
+        
+        // Calculate how long we were hidden
+        const hiddenDuration = this.hiddenTimestamp ? Date.now() - this.hiddenTimestamp : 0;
+        const hiddenSeconds = Math.floor(hiddenDuration / 1000);
+        
+        // If we have a room and were hidden for more than 30 seconds, resume connections
+        if (this.roomId && hiddenSeconds >= 30) {
+            console.log(`[App] Was hidden for ${hiddenSeconds} seconds, resuming connections`);
+            this.resumeConnections();
+        } else if (this.roomId && hiddenSeconds > 0) {
+            // Were hidden but less than 30 seconds
+            this.messageHandler.displaySystemMessage(`✅ Tab active again (was away for ${hiddenSeconds} seconds)`);
+        }
+        
+        this.hiddenTimestamp = null;
+    }
+    
+    // Pause connections when tab is hidden for too long
+    pauseConnections() {
+        console.log('[App] Pausing connections due to inactivity');
+        
+        // Store current state for resume
+        this.pausedState = {
+            peers: new Set(this.peers),
+            peerNicknames: new Map(this.peerNicknames),
+            roomId: this.roomId,
+            nickname: this.nickname
+        };
+        
+        // Temporarily disconnect WebRTC but keep Firebase
+        if (this.webrtcHandler) {
+            // Set extended timeout to prevent disconnection during pause
+            this.webrtcHandler.setInactivityPause(true);
+            
+            // Close data channels but keep peer connections
+            this.webrtcHandler.pauseDataChannels();
+        }
+        
+        // Update UI with paused state
+        this.updateConnectionStatusPaused();
+        this.messageHandler.displaySystemMessage('💤 Connection paused due to inactivity');
+        
+        // Disable input temporarily
+        document.getElementById('messageInput').disabled = true;
+        document.getElementById('sendButton').disabled = true;
+        document.getElementById('fileButton').disabled = true;
+    }
+    
+    // Resume connections when tab becomes active again
+    async resumeConnections() {
+        console.log('[App] Resuming connections');
+        
+        if (!this.pausedState || !this.roomId) {
+            console.log('[App] No paused state to resume');
+            return;
+        }
+        
+        this.messageHandler.displaySystemMessage('🔄 Resuming connection...');
+        
+        // Re-enable WebRTC
+        if (this.webrtcHandler) {
+            this.webrtcHandler.setInactivityPause(false);
+            
+            // Resume data channels
+            this.webrtcHandler.resumeDataChannels();
+            
+            // Check if connections are still alive
+            const connectedPeers = this.webrtcHandler.getConnectedPeerIds();
+            
+            if (connectedPeers.length === 0 && this.pausedState.peers.size > 0) {
+                // Lost all connections, need to reconnect
+                console.log('[App] Lost connections during pause, reconnecting...');
+                this.reconnect();
+            } else {
+                // Connections still alive
+                console.log('[App] Connections resumed successfully');
+                this.messageHandler.displaySystemMessage('✅ Connection resumed');
+                
+                // Re-enable input
+                document.getElementById('messageInput').disabled = false;
+                document.getElementById('sendButton').disabled = false;
+                document.getElementById('fileButton').disabled = false;
+                
+                // Update connection status
+                if (connectedPeers.length > 0) {
+                    this.updateConnectionStatus(CONFIG.CONNECTION_STATE.CONNECTED);
+                }
+            }
+        }
+        
+        this.pausedState = null;
+    }
+    
+    // Handle page unload (tab/window closing)
+    handlePageUnload() {
+        console.log('[App] Page unloading, cleaning up...');
+        
+        // Clean disconnect from room
+        if (this.webrtcHandler) {
+            this.webrtcHandler.disconnect();
+        }
+        
+        if (this.firebaseHandler && this.roomId) {
+            // Firebase onDisconnect should handle cleanup
+            console.log('[App] Firebase will clean up on disconnect');
+        }
     }
 }
 

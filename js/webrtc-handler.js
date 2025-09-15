@@ -10,6 +10,8 @@ class WebRTCHandler {
         this.connectedPeers = new Set(); // Track peers we've already shown connection message for
         this.disconnectTimeouts = new Map(); // Map of peerId -> timeout ID
         this.fileSelectionActive = false; // Track if file selection is active
+        this.inactivityPaused = false; // Track if connections are paused due to inactivity
+        this.pausedChannels = new Map(); // Store paused data channels
         this.onMessageCallback = null;
         this.onPeerConnectedCallback = null;
         this.onPeerDisconnectedCallback = null;
@@ -74,29 +76,15 @@ class WebRTCHandler {
                 }
                 
                 // Don't immediately disconnect, give it time to reconnect
-                // Use longer timeout (30s default, extended if file selection active)
-                const timeoutDuration = this.fileSelectionActive ? 60000 : 30000; // 60s if selecting file, 30s otherwise
-                console.log(`[WebRTC] Setting disconnect timeout for ${peerId}: ${timeoutDuration/1000}s`);
+                // Use extended timeout if paused due to inactivity
+                const timeoutDuration = this.inactivityPaused ? 300000 : 30000; // 5 minutes if paused, 30s otherwise
+                console.log(`[WebRTC] Setting disconnect timeout for ${peerId}: ${timeoutDuration/1000}s (paused: ${this.inactivityPaused})`);
                 
                 const timeout = setTimeout(() => {
                     const currentPc = this.peers.get(peerId);
                     if (currentPc && currentPc.iceConnectionState === 'disconnected') {
-                        // Check again if file selection is still active
-                        if (this.fileSelectionActive) {
-                            console.log(`[WebRTC] File selection active, extending timeout for ${peerId}`);
-                            // Reschedule for another 30 seconds
-                            const extendedTimeout = setTimeout(() => {
-                                const pc = this.peers.get(peerId);
-                                if (pc && pc.iceConnectionState === 'disconnected') {
-                                    console.log(`[WebRTC] Disconnecting ${peerId} after extended timeout`);
-                                    this.handlePeerDisconnected(peerId);
-                                }
-                            }, 30000);
-                            this.disconnectTimeouts.set(peerId, extendedTimeout);
-                        } else {
-                            console.log(`[WebRTC] Disconnecting ${peerId} after timeout`);
-                            this.handlePeerDisconnected(peerId);
-                        }
+                        console.log(`[WebRTC] Disconnecting ${peerId} after ${timeoutDuration/1000}s timeout`);
+                        this.handlePeerDisconnected(peerId);
                     }
                 }, timeoutDuration);
                 
@@ -470,12 +458,66 @@ class WebRTCHandler {
                                 console.log(`[WebRTC] Disconnecting ${peerId} after file selection ended`);
                                 this.handlePeerDisconnected(peerId);
                             }
-                        }, 5000); // 5 seconds grace period after file selection
+                        }, 10000); // 10 seconds grace period after file selection
                         this.disconnectTimeouts.set(peerId, timeout);
                     }
                 }
             });
         }
+    }
+
+    // Set inactivity pause state
+    setInactivityPause(paused) {
+        this.inactivityPaused = paused;
+        console.log(`[WebRTC] Inactivity pause: ${paused}`);
+    }
+    
+    // Pause data channels (keep peer connections alive)
+    pauseDataChannels() {
+        console.log('[WebRTC] Pausing data channels');
+        
+        // Store current channels and close them temporarily
+        this.dataChannels.forEach((channel, peerId) => {
+            if (channel.readyState === 'open') {
+                this.pausedChannels.set(peerId, {
+                    channel: channel,
+                    pc: this.peers.get(peerId)
+                });
+                // Don't actually close the channel, just stop processing messages
+                console.log(`[WebRTC] Paused channel for ${peerId}`);
+            }
+        });
+    }
+    
+    // Resume data channels
+    resumeDataChannels() {
+        console.log('[WebRTC] Resuming data channels');
+        
+        // Check if channels are still alive
+        this.pausedChannels.forEach((pausedData, peerId) => {
+            const channel = pausedData.channel;
+            const pc = pausedData.pc;
+            
+            if (channel && channel.readyState === 'open') {
+                console.log(`[WebRTC] Channel for ${peerId} still open, resuming`);
+                // Channel is still good, just resume normal operation
+            } else if (pc && pc.connectionState === 'connected') {
+                console.log(`[WebRTC] Channel for ${peerId} closed but PC alive, recreating`);
+                // Need to recreate the data channel
+                if (this.initiatorMap.get(peerId)) {
+                    const newChannel = pc.createDataChannel('messages', {
+                        ordered: true,
+                        maxRetransmits: 3
+                    });
+                    this.setupDataChannel(newChannel, peerId);
+                }
+            } else {
+                console.log(`[WebRTC] Connection to ${peerId} lost during pause`);
+                // Connection lost, will need full reconnection
+            }
+        });
+        
+        this.pausedChannels.clear();
     }
 
     // Set callbacks

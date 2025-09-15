@@ -9,6 +9,8 @@ class CallHandler {
         this.currentCall = null;
         this.localStream = null;
         this.remoteStream = null;
+        this.remoteStreams = new Map(); // Map of peerId -> MediaStream for multiple peers
+        this.activePeers = new Set(); // Peers currently in call
         this.callTimer = null;
         this.callStartTime = null;
         
@@ -136,6 +138,13 @@ class CallHandler {
     
     // Start a call
     async startCall(withVideo = false) {
+        // NOTE: Current implementation supports 1-to-1 calls only
+        // For mesh calls with multiple peers, this would need major refactoring:
+        // - Support calling multiple peers simultaneously
+        // - Create video grid layout for multiple remote streams
+        // - Handle peer join/leave during active calls
+        // - Manage bandwidth for multiple video streams
+        
         if (this.currentCall) {
             console.log('Already in a call');
             return;

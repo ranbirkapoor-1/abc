@@ -174,9 +174,20 @@ body {
     box-shadow: 0 0 8px #f14c4c;
 }
 
+.status-dot.paused {
+    background: #9ca3af;
+    box-shadow: 0 0 8px #9ca3af;
+    animation: slowPulse 3s infinite;
+}
+
 @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.5; }
+}
+
+@keyframes slowPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
 }
 
 .peer-count {

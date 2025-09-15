@@ -523,46 +523,68 @@ class P2PChatApp {
         }
     }
 
-    // Update connection status indicator
+    // Update connection status indicator - CLEAR VERSION
     updateConnectionStatus(state) {
         this.connectionState = state;
         
         const dots = document.querySelectorAll('.status-dot');
+        const reconnectBtn = document.getElementById('reconnectBtn');
+        const callControls = document.getElementById('callControls');
+        
+        // Clear all dot states
         dots.forEach(dot => {
             dot.classList.remove('active-green', 'active-yellow', 'active-red', 'paused');
         });
         
-        const reconnectBtn = document.getElementById('reconnectBtn');
-        const callControls = document.getElementById('callControls');
+        // Log status change
+        console.log(`[App] Status Change: ${state}`);
         
         switch (state) {
             case CONFIG.CONNECTION_STATE.CONNECTED:
+                // GREEN - Fully operational
+                // Either: alone in room with Firebase, OR connected to all peers via P2P
                 dots[2].classList.add('active-green');
-                // Hide reconnect, show call controls if peers connected
+                
+                // No need for reconnect when connected
                 if (reconnectBtn) reconnectBtn.style.display = 'none';
-                if (callControls && this.peers.size > 0) {
-                    callControls.style.display = 'flex';
+                
+                // Show call controls only if we have P2P connections
+                const p2pConnected = this.webrtcHandler?.getConnectedPeersCount() > 0;
+                if (callControls) {
+                    callControls.style.display = p2pConnected ? 'flex' : 'none';
                 }
                 break;
+                
             case CONFIG.CONNECTION_STATE.CONNECTING:
+                // YELLOW - In progress
+                // In room with peers but establishing P2P connections
                 dots[1].classList.add('active-yellow');
-                // Hide both during connecting
+                
+                // Hide reconnect during connection attempts
                 if (reconnectBtn) reconnectBtn.style.display = 'none';
+                
+                // Hide call controls until fully connected
                 if (callControls) callControls.style.display = 'none';
                 break;
+                
             case CONFIG.CONNECTION_STATE.DISCONNECTED:
+                // RED - Connection lost
+                // Either: not in room, OR in room but lost all connections
                 dots[0].classList.add('active-red');
-                // Show reconnect button when:
-                // 1. We have a saved room ID (we were in a room)
-                // 2. We're not currently connected via WebRTC
-                // This happens when WebRTC disconnects but we might still be in Firebase room
-                const shouldShowReconnect = this.savedRoomId && this.roomId && 
-                    (!this.webrtcHandler || !this.webrtcHandler.isConnected());
+                
+                // Show reconnect ONLY if:
+                // 1. We were in a room (have savedRoomId)
+                // 2. We still want to be in that room (have roomId)
+                // 3. We have peers but no P2P connections
+                const inRoom = this.savedRoomId && this.roomId;
+                const hasPeersButNoP2P = this.peers.size > 0 && 
+                    (!this.webrtcHandler || this.webrtcHandler.getConnectedPeersCount() === 0);
                 
                 if (reconnectBtn) {
-                    reconnectBtn.style.display = shouldShowReconnect ? 'inline-block' : 'none';
+                    reconnectBtn.style.display = (inRoom && hasPeersButNoP2P) ? 'inline-block' : 'none';
                 }
-                // Hide call controls when disconnected
+                
+                // No calls when disconnected
                 if (callControls) callControls.style.display = 'none';
                 break;
         }
@@ -630,42 +652,95 @@ class P2PChatApp {
         console.error(`[App] Failed to connect to ${nickname} after ${retries} attempts`);
     }
 
-    // Update peer count display
+    // Update peer count and connection status - COMPREHENSIVE VERSION
     async updatePeerCount() {
-        let totalUsers = 0;
+        // Get accurate counts
+        let totalUsersInRoom = 0;
+        let otherPeersInRoom = 0;
+        let p2pConnectedCount = 0;
         
+        // Check Firebase room users
         if (this.firebaseHandler && this.firebaseHandler.roomRef) {
-            const users = await this.firebaseHandler.getRoomUsers();
-            totalUsers = users.length; // This already includes self
+            try {
+                const users = await this.firebaseHandler.getRoomUsers();
+                totalUsersInRoom = users.length; // Includes self
+                otherPeersInRoom = totalUsersInRoom - 1; // Exclude self
+            } catch (error) {
+                console.error('[App] Error getting room users:', error);
+            }
         }
         
-        // If no Firebase connection, at least count self
-        if (totalUsers === 0 && this.roomId) {
-            totalUsers = 1; // Count self
+        // Get P2P connection count
+        if (this.webrtcHandler) {
+            p2pConnectedCount = this.webrtcHandler.getConnectedPeersCount();
         }
         
-        const connectedCount = this.webrtcHandler ? this.webrtcHandler.getConnectedPeersCount() : 0;
-        console.log(`[App] Updating peer count: ${connectedCount} P2P connected, ${totalUsers} total in room`);
+        // Log the state
+        console.log(`[App] Connection State:
+            - In Room: ${this.roomId ? 'Yes' : 'No'}
+            - Total Users in Room: ${totalUsersInRoom}
+            - Other Peers in Room: ${otherPeersInRoom}
+            - P2P Connected: ${p2pConnectedCount}
+            - Firebase Connected: ${this.firebaseHandler?.roomRef ? 'Yes' : 'No'}`);
         
+        // Update peer count display
         const peerCountEl = document.getElementById('peerCount');
-        // Show total users in room (including self)
         if (peerCountEl) {
-            peerCountEl.textContent = totalUsers === 0 ? 'Connecting...' : 
-                                      totalUsers === 1 ? 'You (1 user)' : 
-                                      `${totalUsers} users`;
+            if (!this.roomId) {
+                // Not in a room
+                peerCountEl.textContent = 'Not connected';
+            } else if (totalUsersInRoom === 0) {
+                // In room but can't get user count (Firebase issue)
+                peerCountEl.textContent = 'Connecting...';
+            } else if (totalUsersInRoom === 1) {
+                // Alone in room
+                peerCountEl.textContent = 'Alone (1 user)';
+            } else {
+                // Multiple users in room - show detailed status
+                if (p2pConnectedCount === 0 && otherPeersInRoom > 0) {
+                    // Others in room but no P2P connections
+                    peerCountEl.textContent = `${totalUsersInRoom} users (No P2P)`;
+                } else if (p2pConnectedCount < otherPeersInRoom) {
+                    // Partially connected
+                    peerCountEl.textContent = `${totalUsersInRoom} users (${p2pConnectedCount}/${otherPeersInRoom} P2P)`;
+                } else {
+                    // Fully connected
+                    peerCountEl.textContent = `${totalUsersInRoom} users (All P2P)`;
+                }
+            }
         }
         
-        // Update connection status based on WebRTC connections
-        if (this.webrtcHandler && this.webrtcHandler.isConnected()) {
-            this.updateConnectionStatus(CONFIG.CONNECTION_STATE.CONNECTED);
-        } else if (connectedCount > 0) {
-            this.updateConnectionStatus(CONFIG.CONNECTION_STATE.CONNECTING);
-        } else if (totalUsers > 1) {
-            // We have peers but no connections yet
-            this.updateConnectionStatus(CONFIG.CONNECTION_STATE.CONNECTING);
+        // Determine connection state for status dots
+        let connectionState;
+        
+        if (!this.roomId) {
+            // Not in any room
+            connectionState = CONFIG.CONNECTION_STATE.DISCONNECTED;
+        } else if (otherPeersInRoom === 0) {
+            // Alone in room (no peers to connect to)
+            if (this.firebaseHandler?.roomRef) {
+                // Connected to Firebase, just alone
+                connectionState = CONFIG.CONNECTION_STATE.CONNECTED;
+            } else {
+                // Not even connected to Firebase
+                connectionState = CONFIG.CONNECTION_STATE.DISCONNECTED;
+            }
+        } else if (p2pConnectedCount === otherPeersInRoom) {
+            // Fully connected to all peers
+            connectionState = CONFIG.CONNECTION_STATE.CONNECTED;
+        } else if (p2pConnectedCount > 0) {
+            // Partially connected
+            connectionState = CONFIG.CONNECTION_STATE.CONNECTING;
+        } else if (this.firebaseHandler?.roomRef) {
+            // In Firebase room but no P2P connections yet
+            connectionState = CONFIG.CONNECTION_STATE.CONNECTING;
         } else {
-            this.updateConnectionStatus(CONFIG.CONNECTION_STATE.DISCONNECTED);
+            // Lost all connections
+            connectionState = CONFIG.CONNECTION_STATE.DISCONNECTED;
         }
+        
+        // Update the visual status
+        this.updateConnectionStatus(connectionState);
     }
 
     // Leave room and cleanup

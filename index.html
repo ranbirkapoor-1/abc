@@ -44,13 +44,13 @@
                 </div>
             </div>
             <div class="header-right">
-                <div class="connection-status">
-                    <div class="status-dot red"></div>
-                    <div class="status-dot yellow"></div>
-                    <div class="status-dot green"></div>
+                <div class="connection-status" title="Connection Status: Red=Disconnected, Yellow=Connecting, Green=Connected">
+                    <div class="status-dot red" title="Disconnected"></div>
+                    <div class="status-dot yellow" title="Connecting"></div>
+                    <div class="status-dot green" title="Connected"></div>
                 </div>
-                <span class="peer-count" id="peerCount">0 peers</span>
-                <button class="reconnect-btn" id="reconnectBtn" style="display: none;">Reconnect</button>
+                <span class="peer-count" id="peerCount" title="Users in room / P2P connections">Not connected</span>
+                <button class="reconnect-btn" id="reconnectBtn" style="display: none;" title="Reconnect to P2P network">Reconnect</button>
             </div>
         </div>
 
